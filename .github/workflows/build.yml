@@ -75,7 +75,43 @@ jobs:
           Get-ChildItem $surface.DirectoryName -Filter *.dll | Copy-Item -Destination "$pkg\Surface\"
           Copy-Item "$up\emu\tools\make_samples.py" "$pkg\tools\" -ErrorAction SilentlyContinue
 
-          Copy-Item "$env:GITHUB_WORKSPACE\ours\launcher\*" "$pkg\" -Recurse
+          # Avvio con doppio clic
+          Set-Content -Encoding ascii "$pkg\Avvia KICK.bat" -Value @'
+          @echo off
+          powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\avvia.ps1"
+          if errorlevel 1 pause
+          '@
+
+          Set-Content -Encoding utf8 "$pkg\tools\avvia.ps1" -Value @'
+          # Avvia il pannello virtuale KICK Surface e l'app Kick (adattato da emu\run.ps1, AGPL-3.0).
+          $ErrorActionPreference = 'Stop'
+          $base = Split-Path $PSScriptRoot -Parent
+          $Root = Join-Path $env:USERPROFILE 'KickEmu'
+          $Port = 50910
+          $env:KICK_EMU_ROOT = $Root
+          New-Item -ItemType Directory -Force $Root | Out-Null
+
+          if (-not (Test-Path "$Root\data\sounds\Emu Kit")) {
+              $py = Get-Command python -ErrorAction SilentlyContinue
+              if ($py -and $py.Source -notlike '*WindowsApps*') { & $py.Source "$base\tools\make_samples.py" $Root }
+              else { Write-Host 'Python non trovato: niente suoni demo (facoltativo).' }
+          }
+
+          Remove-Item "$Root\surface.port" -ErrorAction SilentlyContinue
+          $surface = Start-Process -FilePath "$base\Surface\KICK Surface.exe" -ArgumentList @('--root', "`"$Root`"", '--tcp', $Port) -PassThru `
+              -RedirectStandardOutput "$Root\surface.log" -RedirectStandardError "$Root\surface.err.log"
+          for ($i = 0; $i -lt 100 -and -not (Test-Path "$Root\surface.port"); $i++) {
+              if ($surface.HasExited) { Get-Content "$Root\surface.log", "$Root\surface.err.log"; exit 1 }
+              Start-Sleep -Milliseconds 100
+          }
+          $env:KICK_SERIAL_PORT = (Get-Content "$Root\surface.port" -Raw).Trim()
+
+          $kick = Start-Process -FilePath "$base\Kick\Kick.exe" -WorkingDirectory "$base\Kick" -PassThru `
+              -RedirectStandardOutput "$Root\kick.log" -RedirectStandardError "$Root\kick.err.log"
+          Write-Host "KICK avviata. Log in $Root. Chiudi il pannello per uscire."
+          try { while (-not $kick.HasExited -and -not $surface.HasExited) { Start-Sleep -Milliseconds 500 } }
+          finally { foreach ($p in @($kick, $surface)) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force } } }
+          '@
           Get-ChildItem $pkg -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
 
       - name: Scarica l'emulatore
