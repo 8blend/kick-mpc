@@ -1,0 +1,107 @@
+# kick-mpc: compila il simulatore della Behringer KICK partendo dal codice ufficiale + le nostre patch.
+# Si avvia da solo a ogni caricamento di file, oppure a mano da Actions -> "Build simulatore" -> Run workflow.
+name: Build simulatore
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  UPSTREAM_REPO: https://github.com/MusicTribeOpenSource/0700-AAM
+  UPSTREAM_SHA: 27194180ce5fbab3776ebce53e2d4b016597364e
+  JUCE_TAG: 7.0.12
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-22.04
+            name: linux
+    runs-on: ${{ matrix.os }}
+    name: Simulatore ${{ matrix.name }}
+
+    steps:
+      - name: File del nostro repository (patch)
+        uses: actions/checkout@v4
+        with:
+          path: ours
+
+      - name: Codice ufficiale KICK
+        shell: bash
+        run: |
+          git init -q upstream
+          cd upstream
+          git remote add origin "$UPSTREAM_REPO"
+          git -c protocol.version=2 fetch -q --depth 1 origin "$UPSTREAM_SHA"
+          git checkout -q FETCH_HEAD
+
+      - name: Applica le patch kick-mpc
+        shell: bash
+        run: |
+          cd upstream
+          shopt -s nullglob
+          for p in ../ours/*.patch ../ours/patches/*.patch; do
+            echo "==> $p"
+            git apply --whitespace=nowarn "$p"
+          done
+
+      - name: JUCE
+        shell: bash
+        run: git clone -q --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE juce
+
+      - name: Pacchetti Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libjack-jackd2-dev libcurl4-openssl-dev \
+            libfreetype6-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configura
+        shell: bash
+        run: |
+          set -o pipefail
+          W="$GITHUB_WORKSPACE"
+          cmake -S upstream/Kick -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKICK_SIMULATOR=ON \
+            -DTIMESTAMP=OFF \
+            -DCPM_SOURCE_CACHE="$W/upstream/.3rdPartySourceCache" \
+            -DCPM_JUCE_SOURCE="$W/juce" \
+            -DCPM_AudIO_SOURCE="$W/upstream/AudIO" \
+            -DCPM_COM_PROTOCOL_SOURCE="$W/upstream/ComProtocol" 2>&1 | tee configure-log.txt
+
+      - name: Compila
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build --config Release --target KT_KickEM -j 4 2>&1 | tee build-log.txt
+
+      - name: Prepara il pacchetto
+        if: success()
+        shell: bash
+        run: |
+          mkdir -p out
+          find build -path '*KT_KickEM*' \( -name 'KT_KickEM.exe' -o -name 'KT_KickEM' \) -type f -exec cp {} out/ \;
+          ls -la out
+
+      - name: Scarica il simulatore
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KT_KickEM-${{ matrix.name }}
+          path: out/
+
+      - name: Log per Claude (se qualcosa va storto)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-${{ matrix.name }}
+          path: |
+            configure-log.txt
+            build-log.txt
+          if-no-files-found: ignore
