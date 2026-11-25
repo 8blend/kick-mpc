@@ -1,35 +1,3 @@
-From 2a9b85618ae79f8ec0e6b7c28c82003d43b5e401 Mon Sep 17 00:00:00 2001
-From: kick-mpc <noreply@anthropic.com>
-Date: Wed, 25 Nov 2026 14:45:42 +0100
-Subject: [PATCH] Make the public release buildable for the desktop simulator
-
-- AudIO: add juce_modules.cmake and AudIO_constants / AudIO_juce wrapper modules
-- ComProtocol: expose PktMgr as a JUCE module
-- Kick: clean-room juce_serialport replacement (POSIX termios)
-- Vendor CPM 0.40.2 so configure works offline
-- scripts/setup-wsl.sh: one-shot build of KT_KickEM on Ubuntu/WSL2
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01F37UGDD63rfwvpZZNGnf8T
----
- .3rdPartySourceCache/cpm/CPM_0.40.2.cmake     | 1269 +++++++++++++++++
- AudIO/juce_modules.cmake                      |    6 +
- .../AudIO_constants/AudIO_constants.h         |   13 +
- AudIO/wrappers/AudIO_juce/AudIO_juce.h        |   13 +
- ComProtocol/PktMgr/PktMgr.h                   |   13 +
- .../juce_serialport/juce_serialport.cpp       |  251 ++++
- .../juce_serialport/juce_serialport.h         |  127 ++
- scripts/setup-wsl.sh                          |   39 +
- 8 files changed, 1731 insertions(+)
- create mode 100644 .3rdPartySourceCache/cpm/CPM_0.40.2.cmake
- create mode 100644 AudIO/juce_modules.cmake
- create mode 100644 AudIO/wrappers/AudIO_constants/AudIO_constants.h
- create mode 100644 AudIO/wrappers/AudIO_juce/AudIO_juce.h
- create mode 100644 ComProtocol/PktMgr/PktMgr.h
- create mode 100644 Kick/modules/3rdParty/juce_serialport/juce_serialport.cpp
- create mode 100644 Kick/modules/3rdParty/juce_serialport/juce_serialport.h
- create mode 100755 scripts/setup-wsl.sh
-
 diff --git a/.3rdPartySourceCache/cpm/CPM_0.40.2.cmake b/.3rdPartySourceCache/cpm/CPM_0.40.2.cmake
 new file mode 100644
 index 00000000..8269a8bf
@@ -1374,6 +1342,23 @@ index 00000000..8a474e73
 +*/
 +#pragma once
 +#include "PktMgr.hpp"
+diff --git a/Kick/apps/kickem/CMakeLists.txt b/Kick/apps/kickem/CMakeLists.txt
+index e6e96b2f..a1f0febe 100644
+--- a/Kick/apps/kickem/CMakeLists.txt
++++ b/Kick/apps/kickem/CMakeLists.txt
+@@ -8,6 +8,12 @@ set(TargetCompany MUSICTribe)
+ project(${TargetName} VERSION ${TargetVersion})
+ set(CMAKE_INCLUDE_CURRENT_DIR ON)
+ 
++## kick-mpc: assets and generated config, same as the device apps (kick_gui)
++file(COPY "${CMAKE_SOURCE_DIR}/templates" DESTINATION "${CMAKE_BINARY_DIR}")
++file(COPY "${CMAKE_SOURCE_DIR}/demos" DESTINATION "${CMAKE_BINARY_DIR}")
++set(TargetSrc_DIR ".")
++configure_file(${CMAKE_SOURCE_DIR}/config.h.in ${CMAKE_CURRENT_BINARY_DIR}/config.h)
++
+ juce_add_gui_app(${TargetName} 
+         PRODUCT_NAME ${TargetName}
+         COMPANY_NAME ${TargetCompany}
 diff --git a/Kick/modules/3rdParty/juce_serialport/juce_serialport.cpp b/Kick/modules/3rdParty/juce_serialport/juce_serialport.cpp
 new file mode 100644
 index 00000000..9cb95deb
@@ -1809,6 +1794,3 @@ index 00000000..a55e7545
 +echo "Fatto. Eseguibili trovati:"
 +find "$BUILD" -type f -executable -name 'KT_Kick*' | head
 +echo "Se qualcosa fallisce, mandami il file build-log.txt."
--- 
-2.43.0
-
