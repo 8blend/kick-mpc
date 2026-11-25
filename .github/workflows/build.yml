@@ -1,6 +1,7 @@
-# kick-mpc: compila il simulatore della Behringer KICK partendo dal codice ufficiale + le nostre patch.
-# Si avvia da solo a ogni caricamento di file, oppure a mano da Actions -> "Build simulatore" -> Run workflow.
-name: Build simulatore
+# kick-mpc: compila per Windows l'emulatore KICK (app Kick vera + pannello virtuale "KICK Surface").
+# Base: proposta n. 40 del repo ufficiale (emulatore di Thomas Phillips, AGPL-3.0) + le nostre patch in patches/.
+# Si avvia da solo a ogni caricamento di file, oppure a mano da Actions -> "Build emulatore KICK" -> Run workflow.
+name: Build emulatore KICK
 
 on:
   push:
@@ -8,100 +9,88 @@ on:
 
 env:
   UPSTREAM_REPO: https://github.com/MusicTribeOpenSource/0700-AAM
-  UPSTREAM_SHA: 27194180ce5fbab3776ebce53e2d4b016597364e
-  JUCE_TAG: 7.0.12
+  UPSTREAM_REF: refs/pull/40/head
+  UPSTREAM_SHA: 49bb111e8a20a95f3b8e3f755a715ef7366a98ac
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            name: windows
-          - os: ubuntu-22.04
-            name: linux
-    runs-on: ${{ matrix.os }}
-    name: Simulatore ${{ matrix.name }}
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 300
+    name: Emulatore Windows
 
     steps:
-      - name: File del nostro repository (patch)
+      - name: Niente conversione dei fine riga (serve alla patch di JUCE)
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: File del nostro repository
         uses: actions/checkout@v4
         with:
           path: ours
 
-      - name: Codice ufficiale KICK
+      - name: Codice KICK + emulatore (proposta n. 40)
         shell: bash
         run: |
           git init -q upstream
           cd upstream
           git remote add origin "$UPSTREAM_REPO"
-          git -c protocol.version=2 fetch -q --depth 1 origin "$UPSTREAM_SHA"
+          git fetch -q --depth 1 origin "$UPSTREAM_REF"
           git checkout -q FETCH_HEAD
+          echo "Versione: $(git rev-parse HEAD) (attesa $UPSTREAM_SHA)"
 
-      - name: Applica le patch kick-mpc
+      - name: Applica le patch kick-mpc (cartella patches/)
         shell: bash
         run: |
           cd upstream
           shopt -s nullglob
-          for p in ../ours/*.patch ../ours/patches/*.patch; do
+          for p in ../ours/patches/*.patch; do
             echo "==> $p"
             git apply --whitespace=nowarn "$p"
           done
 
-      - name: JUCE
-        shell: bash
-        run: git clone -q --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE juce
-
-      - name: Pacchetti Linux
-        if: runner.os == 'Linux'
+      - name: Compila Kick e KICK Surface
+        shell: pwsh
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build libasound2-dev libjack-jackd2-dev libcurl4-openssl-dev \
-            libfreetype6-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
-            libxinerama-dev libxrandr-dev libxi-dev libxrender-dev libglu1-mesa-dev mesa-common-dev
-
-      - name: Configura
-        shell: bash
-        run: |
-          set -o pipefail
-          W="$GITHUB_WORKSPACE"
-          cmake -S upstream/Kick -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DKICK_SIMULATOR=ON \
-            -DTIMESTAMP=OFF \
-            -DCPM_SOURCE_CACHE="$W/upstream/.3rdPartySourceCache" \
-            -DCPM_JUCE_SOURCE="$W/juce" \
-            -DCPM_AudIO_SOURCE="$W/upstream/AudIO" \
-            -DCPM_COM_PROTOCOL_SOURCE="$W/upstream/ComProtocol" 2>&1 | tee configure-log.txt
-
-      - name: Compila
-        shell: bash
-        run: |
-          set -o pipefail
-          cmake --build build --config Release --target KT_KickEM -j 4 2>&1 | tee build-log.txt
+          cd upstream
+          .\emu\build.ps1 -Jobs 4 *>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\build-log.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Prepara il pacchetto
-        if: success()
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir -p out
-          find build -path '*KT_KickEM*' \( -name 'KT_KickEM.exe' -o -name 'KT_KickEM' \) -type f -exec cp {} out/ \;
-          ls -la out
+          $up  = "$env:GITHUB_WORKSPACE\upstream"
+          $pkg = "$env:GITHUB_WORKSPACE\KICK-Emulatore"
+          New-Item -ItemType Directory -Force "$pkg\Kick", "$pkg\Surface", "$pkg\tools" | Out-Null
 
-      - name: Scarica il simulatore
-        if: success()
+          $kick    = Get-ChildItem "$up\build\emu" -Recurse -Filter Kick.exe | Select-Object -First 1
+          $surface = Get-ChildItem "$up\build\surface" -Recurse -Filter 'KICK Surface.exe' | Select-Object -First 1
+          if (-not $kick -or -not $surface) { throw 'eseguibili non trovati' }
+
+          Copy-Item $kick.FullName "$pkg\Kick\"
+          Get-ChildItem $kick.DirectoryName -Filter *.dll | Copy-Item -Destination "$pkg\Kick\"
+          foreach ($d in 'assets', 'demos', 'templates') {
+            if (Test-Path "$up\build\emu\$d") { Copy-Item "$up\build\emu\$d" "$pkg\Kick\$d" -Recurse }
+          }
+          Copy-Item $surface.FullName "$pkg\Surface\"
+          Get-ChildItem $surface.DirectoryName -Filter *.dll | Copy-Item -Destination "$pkg\Surface\"
+          Copy-Item "$up\emu\tools\make_samples.py" "$pkg\tools\" -ErrorAction SilentlyContinue
+
+          Copy-Item "$env:GITHUB_WORKSPACE\ours\launcher\*" "$pkg\" -Recurse
+          Get-ChildItem $pkg -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - name: Scarica l'emulatore
         uses: actions/upload-artifact@v4
         with:
-          name: KT_KickEM-${{ matrix.name }}
-          path: out/
+          name: KICK-Emulatore-Windows
+          path: KICK-Emulatore/
 
       - name: Log per Claude (se qualcosa va storto)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: log-${{ matrix.name }}
+          name: log-windows
           path: |
-            configure-log.txt
             build-log.txt
+            upstream/build/emu-configure.log
+            upstream/build/surface-configure.log
           if-no-files-found: ignore
