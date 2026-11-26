@@ -1,0 +1,79 @@
+diff --git a/emu/modules/AudIO_juce/AudIO_juce.cpp b/emu/modules/AudIO_juce/AudIO_juce.cpp
+index a713051b..f42fd799 100644
+--- a/emu/modules/AudIO_juce/AudIO_juce.cpp
++++ b/emu/modules/AudIO_juce/AudIO_juce.cpp
+@@ -25,26 +25,62 @@ namespace mt
+         stop();
+     }
+ 
++    // kick-mpc: writes audio setup messages to <KICK_EMU_ROOT>/audio.log as well, because a
++    // Windows GUI app has no console and juce::Logger output is otherwise invisible.
++    static void emuAudioLog( const juce::String& message )
++    {
++        juce::Logger::writeToLog( message );
++        auto root = juce::SystemStats::getEnvironmentVariable( "KICK_EMU_ROOT", {} );
++        if( root.isNotEmpty() )
++            juce::File( root ).getChildFile( "audio.log" ).appendText( juce::Time::getCurrentTime().toString( true, true, true, true ) + "  " + message + "\n" );
++    }
++
+     void AudioDevice::start( uint32_t samplerate, uint32_t blocksize )
+     {
+         blockSize = blocksize;
+ 
+-        juce::AudioDeviceManager::AudioDeviceSetup setup;
++        // Outputs are what matter; ask for inputs too, but retry with outputs only when the
++        // host has no usable input (common on desktops without a microphone).
+         auto error = deviceManager.initialise( numIns, numOuts, nullptr, true, requestedDevice, nullptr );
++        if( error.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr )
++        {
++            emuAudioLog( "[emu] audio init with inputs failed: " + error + " - retrying outputs only" );
++            error = deviceManager.initialise( 0, numOuts, nullptr, true, requestedDevice, nullptr );
++        }
+         if( error.isNotEmpty() )
+-            juce::Logger::writeToLog( "[emu] audio device init: " + error );
+-
+-        deviceManager.getAudioDeviceSetup( setup );
+-        setup.sampleRate = (double)samplerate;
+-        setup.bufferSize = (int)blocksize;
+-        error            = deviceManager.setAudioDeviceSetup( setup, true );
+-        if( error.isNotEmpty() )
+-            juce::Logger::writeToLog( "[emu] audio device setup: " + error );
++            emuAudioLog( "[emu] audio device init: " + error );
++
++        // Try the engine's rate and block size. If the host refuses (WASAPI shared mode only runs
++        // at the Windows mixer rate), keep the device it already opened instead of ending up silent.
++        juce::AudioDeviceManager::AudioDeviceSetup original;
++        deviceManager.getAudioDeviceSetup( original );
++
++        auto wanted       = original;
++        wanted.sampleRate = (double)samplerate;
++        wanted.bufferSize = (int)blocksize;
++        error             = deviceManager.setAudioDeviceSetup( wanted, true );
++        if( error.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr )
++        {
++            emuAudioLog( "[emu] audio " + juce::String( samplerate ) + " Hz / " + juce::String( blocksize ) + " refused: " + error );
++            auto keepRate       = original;
++            keepRate.bufferSize = (int)blocksize;
++            error               = deviceManager.setAudioDeviceSetup( keepRate, true );
++            if( error.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr )
++            {
++                emuAudioLog( "[emu] audio custom buffer refused too: " + error + " - using device defaults" );
++                error = deviceManager.setAudioDeviceSetup( original, true );
++                if( error.isNotEmpty() || deviceManager.getCurrentAudioDevice() == nullptr )
++                    deviceManager.initialiseWithDefaultDevices( 0, 2 );
++            }
++        }
+ 
+         if( auto* dev = deviceManager.getCurrentAudioDevice() )
+-            juce::Logger::writeToLog( "[emu] audio device: " + dev->getName() + " @ "
+-                                      + juce::String( dev->getCurrentSampleRate() ) + " Hz, "
+-                                      + juce::String( dev->getCurrentBufferSizeSamples() ) + " samples" );
++            emuAudioLog( "[emu] audio device: " + dev->getTypeName() + " / " + dev->getName() + " @ "
++                         + juce::String( dev->getCurrentSampleRate() ) + " Hz, "
++                         + juce::String( dev->getCurrentBufferSizeSamples() ) + " samples, "
++                         + juce::String( dev->getActiveOutputChannels().countNumberOfSetBits() ) + " out" );
++        else
++            emuAudioLog( "[emu] NO audio device open - no sound" );
+ 
+         prepareToPlay( samplerate, blocksize );
+         setState( AudIO::AudioDeviceState::playing );
